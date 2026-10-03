@@ -23,19 +23,22 @@ Tweaked for ~1.5ms latency at 96kHz sample rate.
 2. Flash the image to a microSD card using [Raspberry Pi Imager](https://www.raspberrypi.org/software/)
 3. Download the licenced Pianoteq Linux Aarch64 (arm-64bit) binary from your Modartt account
 4. Plug the SD card into your computer. You should see an external drive named `pianoberry`
-5. Place your Linux Aarch64 (arm-64bit) Pianoteq 8 or Pianoteq 9 binary on the root of the `pianoberry` drive
+5. Place your Linux Aarch64 (arm-64bit) Pianoteq binary on the root of the `pianoberry` drive (supports Pianoteq 8/9, Stage, and Pro editions, e.g. `Pianoteq 9 STAGE` or `Pianoteq 9`)
 6. Open the `config.txt` file on the root of the `pianoberry` drive. Scroll down to the bottom and add your serial number and initial preset:
 ```
 [PIANOBERRY]
 pianoteq_serial=xxxx-xxxx-xxxx-xxxx
-pianoteq_initial_preset=NY Steinway D Jazz
+pianoteq_initial_preset=NY Steinway D Player
 ```
+*(Note for Pianoteq Stage: Ensure `pianoteq_initial_preset` is set to one of the instrument packs included in your license)*
 7. Eject the SD card and insert it into the Raspberry PI 5 with a Pisound sound card
 8. Connect a MIDI keyboard to the Pisound MIDI input or via USB
 9. Play!
 
 **Activation of the licence requires internet connection on first boot**.  
 After the activation, Pianoberry doesn't need network access.
+
+**Troubleshooting**: If you experience issues or no sound, insert the SD card into your computer and inspect `pianoberry.log` on the root of the `pianoberry` drive.
 
 Please do not contact Modartt support about Pianoberry activation issues.  
 Open an issue in this repository instead.

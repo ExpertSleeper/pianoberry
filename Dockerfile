@@ -1,14 +1,15 @@
 FROM alpine:3.21
 
 RUN apk add --no-cache \
-		util-linux \
+		dosfstools \
+		mtools \
 		e2fsprogs \
-		coreutils \
-		advancecomp \
-		multipath-tools \
+		p7zip \
 		parted \
-		e2fsprogs-extra \
-		rsync \
+		advancecomp \
+		coreutils \
+		util-linux \
+		wget \
 		zip
 
 VOLUME /build

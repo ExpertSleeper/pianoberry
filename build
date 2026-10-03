@@ -28,12 +28,17 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-if [ $FORCE_REBUILD ] || [ -z "$(docker image ls | grep pianoberry-build)" ]; then
-  echo "Building pianoberry-build image"
-  docker rmi $(docker images | grep 'pianoberry-build' | awk '{print $2}')
+if [ "$FORCE_REBUILD" -eq 1 ]; then
+  docker rmi -f pianoberry-build >/dev/null 2>&1 || true
+fi
+
+echo "Building pianoberry-build image"
+if [ "$FORCE_REBUILD" -eq 1 ]; then
   docker build --no-cache -q -t pianoberry-build .
+else
+  docker build -q -t pianoberry-build .
 fi
 
 mkdir -p deploy
 
-docker run --privileged --rm -it -v ./deploy:/build pianoberry-build:latest
+docker run --rm -it -v ./deploy:/build pianoberry-build:latest

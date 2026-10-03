@@ -1,5 +1,13 @@
 #!/bin/sh
 
+# Ensure this script is running inside the Docker build container
+if [ ! -f /.dockerenv ] && [ ! -d /build ]; then
+	echo "Error: This script is intended to run inside the Docker container."
+	echo "Please run './build' from the repository root directory instead:"
+	echo "  cd .. && ./build"
+	exit 1
+fi
+
 URL="http://repo.tinycorelinux.net"
 
 PACKAGES="
@@ -40,21 +48,25 @@ mkdir -p /build/src
 cd /build/src
 
 download_file() {
-	if [ ! -f "${1##*/}" ]; then
-		echo "Downloading ${1}"
-		wget ${1}
-		if [ $? -ne 0 ]; then
-			echo "Failed to download ${1}"
-			rm -f ${1##*/}
-
-			if [ $2 -eq 1 ]; then
+	filename="${1##*/}"
+	is_optional="$2"
+	if [ ! -f "$filename" ]; then
+		if [ "$is_optional" = "1" ]; then
+			# Quietly attempt optional download (e.g. .tree file)
+			if ! wget -q "${1}"; then
+				rm -f "$filename"
 				return 1
-			else
+			fi
+		else
+			echo "Downloading ${1}"
+			if ! wget "${1}"; then
+				echo "Failed to download ${1}"
+				rm -f "$filename"
 				exit 1
 			fi
 		fi
 	else
-		echo "${1##*/} already exists, skipping download"
+		echo "${filename} already exists, skipping download"
 	fi
 }
 
@@ -86,77 +98,49 @@ done
 
 cd /pianoberry/pianoberry
 
-unzip /build/src/piCore64-15.0.0.zip
+unzip -q -o /build/src/piCore64-15.0.0.zip
 
-dd bs=512 seek=532479 of=pianoberry.img < /dev/null
-parted --script pianoberry.img \
-	mklabel msdos \
-	mkpart primary fat32 8192s 305151s \
-	mkpart primary ext4 305152s 100%
+mkdir -p p1_dir p2_dir
 
-TARGET_LOOP=$(kpartx -av pianoberry.img | awk 'NR==1 {print substr($3, 1, length($3)-2)}')
+# Extract partitions from piCore64 base image in userspace using 7z
+7z e -y piCore64-15.0.0.img 0.fat 1.img >/dev/null
+7z x -y -op1_dir 0.fat >/dev/null
+7z x -y -op2_dir 1.img >/dev/null
+rm -f 0.fat 1.img piCore64-15.0.0.img
 
-mkdir -p p1 p2
-
-mkfs.vfat -F 32 -n pianoberry /dev/mapper/${TARGET_LOOP}p1
-mkfs.ext4 -L data /dev/mapper/${TARGET_LOOP}p2
-
-mount /dev/mapper/${TARGET_LOOP}p1 p1
-mount /dev/mapper/${TARGET_LOOP}p2 p2
-
-sync
-
-SOURCE_LOOP=$(kpartx -av piCore64-15.0.0.img | awk 'NR==1 {print substr($3, 1, length($3)-2)}')
-
-mkdir -p source_p1 source_p2
-
-mount /dev/mapper/${SOURCE_LOOP}p1 source_p1
-mount /dev/mapper/${SOURCE_LOOP}p2 source_p2
-
-rsync -a source_p1/ p1/
-rsync -a source_p2/ p2/
-
-sync
-
-echo "Source image info:"
-fdisk -l piCore64-15.0.0.img
-df -h source_p1
-df -h source_p2
-
-echo "Target image info:"
-fdisk -l pianoberry.img
-df -h p1
-df -h p2
+# Remove stock piCore mydata.tgz so it does not overwrite our bootlocal.sh or configs at boot!
+rm -f p2_dir/tce/mydata.tgz
+> p2_dir/tce/onboot.lst
 
 # Set hostname
-printf ' pianoberry' > p1/cmdline.txt
+printf ' pianoberry' >> p1_dir/cmdline.txt
 
 cd /build/src
 
 install_tcz() {
-	# Some tczs don't have a .tree file
 	if [ ! -f "${1}.tree" ]; then
 		echo "Installing ${1}"
-		cp ${1}* /pianoberry/pianoberry/p2/tce/optional
+		cp ${1}* /pianoberry/pianoberry/p2_dir/tce/optional/
 		return
 	fi
 
 	for file in `cat ${1}.tree`; do
-		# Don't copy if file exists
-		if [ -f "/pianoberry/pianoberry/p2/tce/optional/${file}" ]; then
+		if [ -f "/pianoberry/pianoberry/p2_dir/tce/optional/${file}" ]; then
 			continue
 		fi
 
 		echo "Installing ${file}"
-		cp ${file}* /pianoberry/pianoberry/p2/tce/optional
+		cp ${file}* /pianoberry/pianoberry/p2_dir/tce/optional/
 
 		if echo "${file}" | grep -q "v8.tcz$"; then
 			additional_file=$(echo "${file}" | sed 's/v8\.tcz$/v8-16k.tcz/')
 			echo "Installing ${additional_file}"
-			cp ${additional_file}* /pianoberry/pianoberry/p2/tce/optional
+			cp ${additional_file}* /pianoberry/pianoberry/p2_dir/tce/optional/
 		fi
 	done
 }
+
+mkdir -p /pianoberry/pianoberry/p2_dir/tce/optional
 
 # Install the required extensions
 for package in $PACKAGES; do
@@ -164,56 +148,120 @@ for package in $PACKAGES; do
 done
 
 # Enable the installed extensions
+echo openssh.tcz >> /pianoberry/pianoberry/p2_dir/tce/onboot.lst
 for package in $PACKAGES; do
-	echo $package >> /pianoberry/pianoberry/p2/tce/onboot.lst
+	echo $package >> /pianoberry/pianoberry/p2_dir/tce/onboot.lst
 done
 
-echo alsa-modules-6.6.47-piCore-v8-16k.tcz >> /pianoberry/pianoberry/p2/tce/onboot.lst
+echo alsa-modules-6.6.47-piCore-v8-16k.tcz >> /pianoberry/pianoberry/p2_dir/tce/onboot.lst
 
-# Disable internal sound card
-sed -i 's/dtparam=audio=on/#dtparam=audio=on/g' /pianoberry/pianoberry/p1/config.txt
+# Disable internal sound card in config.txt (Pisound HAT is auto-detected via its on-board EEPROM)
+sed -i 's/dtparam=audio=on/#dtparam=audio=on/g' /pianoberry/pianoberry/p1_dir/config.txt
 
 # Unpack the rootfs
 mkdir -p /pianoberry/pianoberry/tempdir
 cd /pianoberry/pianoberry/tempdir
-zcat ../p1/rootfs-piCore64-15.0.gz | cpio -i
+zcat ../p1_dir/rootfs-piCore64-15.0.gz | cpio -idm
 
 # Add Pianoteq configs
 mkdir -p root/.config/Modartt
 mkdir -p root/.local/share/Modartt/Pianoteq/MidiMappings
+mkdir -p usr/local/share/pianoberry
 
-install -m 644 ../Pianoteq.prefs root/.config/Modartt/Pianoteq84.prefs
-install -m 644 ../Pianoteq.prefs root/.config/Modartt/Pianoteq90.prefs
+# Install master preferences template and MIDI mapping
+install -m 644 ../Pianoteq.prefs usr/local/share/pianoberry/Pianoteq.prefs
+install -m 644 ../midi-map.ptm usr/local/share/pianoberry/midi-map.ptm
 install -m 644 ../midi-map.ptm root/.local/share/Modartt/Pianoteq/MidiMappings/
 
-# Add Pianoteq binary
-install -m 777 "../Pianoteq "[89] usr/bin/Pianoteq
+# Add Pianoteq binary (support any 8/9 binary: Stage, Pro, Standard, or versioned)
+for bin in "../Pianoteq "[89]*; do
+	if [ -f "$bin" ]; then
+		install -m 755 "$bin" usr/bin/Pianoteq
+		break
+	fi
+done
+
+# Dynamically derive prefs filename from binary version if present
+if [ -f usr/bin/Pianoteq ]; then
+	VERSION_STR=$(strings usr/bin/Pianoteq 2>/dev/null | grep -E '^Pianoteq [0-9]+\.[0-9]+' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
+	if [ -n "$VERSION_STR" ]; then
+		VER_TAG=$(echo "$VERSION_STR" | tr -d '.')
+		install -m 644 ../Pianoteq.prefs "root/.config/Modartt/Pianoteq${VER_TAG}.prefs"
+	fi
+fi
 
 # Add Pianoteq startup script
-install -m 777 ../startup.sh usr/bin/
+install -m 755 ../startup.sh usr/bin/
 
-mkdir -p /pianoberry/pianoberry/mydata
-cd /pianoberry/pianoberry/mydata
-tar -xpvzf ../mydata.tgz
+# Configure ALSA default to Pisound hardware hw:pisound,0 (immune to USB card numbering)
+mkdir -p etc
+cat << 'EOF' > etc/asound.conf
+pcm.!default {
+   type plug
+   slave.pcm "hw:pisound,0"
+}
+ctl.!default {
+   type hw
+   card pisound
+}
+EOF
 
 # Start Pianoteq on boot
-echo "/usr/bin/startup.sh" >> opt/bootlocal.sh
+mkdir -p opt
+cat << 'EOF' > opt/bootlocal.sh
+#!/bin/sh
+export HOME="/root"
+export USER="root"
+export XDG_CONFIG_HOME="/root/.config"
+export XDG_DATA_HOME="/root/.local/share"
+echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 
-tar -cpvzf ../mydata.tgz .
+# Set password for tc and root so SSH works reliably
+echo "tc:piCore" | chpasswd 2>/dev/null || true
+echo "root:piCore" | chpasswd 2>/dev/null || true
+
+# Import authorized_keys from boot partition if present
+mount /mnt/mmcblk0p1 2>/dev/null
+if [ -f /mnt/mmcblk0p1/authorized_keys ]; then
+	mkdir -p /home/tc/.ssh /root/.ssh
+	cp /mnt/mmcblk0p1/authorized_keys /home/tc/.ssh/authorized_keys
+	cp /mnt/mmcblk0p1/authorized_keys /root/.ssh/authorized_keys
+	chmod 600 /home/tc/.ssh/authorized_keys /root/.ssh/authorized_keys
+	chown -R tc:staff /home/tc/.ssh
+fi
+
+[ -x /usr/local/etc/init.d/openssh ] && /usr/local/etc/init.d/openssh start
+
+# If a startup.sh override exists on the boot partition, run it, otherwise run built-in
+if [ -f /mnt/mmcblk0p1/startup.sh ]; then
+	/bin/sh /mnt/mmcblk0p1/startup.sh &
+else
+	/usr/bin/startup.sh &
+fi
+EOF
+chmod +x opt/bootlocal.sh
+
+# Whitelist files for persistence during license activation
+cat << 'EOF' > opt/.filetool.lst
+opt
+home
+root
+etc
+usr/bin/Pianoteq
+usr/local/etc/ssh
+EOF
 
 cd /pianoberry/pianoberry
 
-cp mydata.tgz p2/tce/
-
 # Load pianoberry rootfs instead of the original one
-sed -i 's/rootfs-piCore64-15\.0/rootfs-pianoberry/g' p1/config.txt
+sed -i 's/rootfs-piCore64-15\.0/rootfs-pianoberry/g' p1_dir/config.txt
 
 # Add Pianoberry default configs to pi/config.txt
-cat <<EOF >> p1/config.txt
+cat <<EOF >> p1_dir/config.txt
 
 [PIANOBERRY]
 pianoteq_serial=
-pianoteq_initial_preset=U4 Felt II
+pianoteq_initial_preset=NY Steinway D Player
 EOF
 
 echo "Creating the image. This may take a while..."
@@ -223,22 +271,47 @@ cd tempdir
 find . | cpio -o -H newc | gzip > ../rootfs-pianoberry.gz
 cd /pianoberry/pianoberry
 advdef -z4 rootfs-pianoberry.gz
-rm -f p1/rootfs-piCore64-15.0.gz
-cp rootfs-pianoberry.gz p1/
+rm -f p1_dir/rootfs-piCore64-15.0.gz
+cp rootfs-pianoberry.gz p1_dir/
 
-sync
+echo "Assembling disk partitions in userspace..."
+
+# 1. Build Partition 1: FAT32 (196 MiB = 401408 sectors * 512 bytes)
+dd if=/dev/zero of=p1.fat bs=512 count=401408 status=none
+mkfs.vfat -F 32 -n pianoberry p1.fat >/dev/null
+
+export MTOOLS_SKIP_CHECK=1
+(
+	cd p1_dir
+	for item in *; do
+		mcopy -i ../p1.fat -s "$item" ::
+	done
+	for item in .*; do
+		[ "$item" = "." ] || [ "$item" = ".." ] || mcopy -i ../p1.fat -s "$item" ::
+	done
+)
+
+# 2. Build Partition 2: ext4 (119 MiB)
+mke2fs -t ext4 -L data -d p2_dir p2.ext4 119M >/dev/null 2>&1
+
+# 3. Assemble complete MBR image (320 MiB = 655360 sectors)
+dd bs=512 seek=655359 of=pianoberry.img < /dev/null status=none
+parted --script pianoberry.img \
+	mklabel msdos \
+	mkpart primary fat32 8192s 409599s \
+	mkpart primary ext4 409600s 100%
+
+# Write Partition 1 at sector 8192 and Partition 2 at sector 409600
+dd if=p1.fat of=pianoberry.img bs=512 seek=8192 conv=notrunc status=none
+dd if=p2.ext4 of=pianoberry.img bs=512 seek=409600 conv=notrunc status=none
+
+rm -f p1.fat p2.ext4
+rm -rf p1_dir p2_dir tempdir rootfs-pianoberry.gz
 
 echo "Pianoberry image info:"
 fdisk -l pianoberry.img
-df -h p1
-df -h p2
 
-umount p1 p2 source_p1 source_p2
-kpartx -d /dev/${SOURCE_LOOP}
-kpartx -d /dev/${TARGET_LOOP}
-
-# Delete previous zip if it exists,
-# we don't want to append to the existing archive
+# Delete previous zip if it exists
 if [ -f "/build/pianoberry.img.zip" ]; then
     rm /build/pianoberry.img.zip
 fi

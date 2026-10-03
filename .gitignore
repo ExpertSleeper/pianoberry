@@ -1,8 +1,10 @@
 # Project
 ################################################################
 deploy
-Pianoteq\ 8
-Pianoteq\ 9
+Pianoteq*
+pianoberry.log
+*.img
+*.zip
 *.afdesign~lock~
 
 # macOS
